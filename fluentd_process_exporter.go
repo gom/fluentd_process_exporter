@@ -3,6 +3,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
@@ -10,8 +12,9 @@ import (
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/prometheus/common/log"
+	"github.com/prometheus/common/promslog"
 	"github.com/prometheus/common/version"
 	"github.com/prometheus/procfs"
 )
@@ -36,10 +39,11 @@ type Exporter struct {
 	virtualMemory  *prometheus.GaugeVec
 	residentMemory *prometheus.GaugeVec
 	fluentdUp      prometheus.Gauge
+	logger         *slog.Logger
 }
 
 // NewExporter returns an initialized Exporter.
-func NewExporter() (*Exporter, error) {
+func NewExporter(logger *slog.Logger) (*Exporter, error) {
 	fs, err := procfs.NewFS(procfs.DefaultMountPoint)
 	if err != nil {
 		return nil, err
@@ -79,6 +83,7 @@ func NewExporter() (*Exporter, error) {
 			Name:      "up",
 			Help:      "the fluentd processes",
 		}),
+		logger: logger,
 	}, nil
 }
 
@@ -108,8 +113,6 @@ func (e *Exporter) collect(ch chan<- prometheus.Metric) {
 		e.scrapeFailures.Collect(ch)
 		return
 	}
-
-	log.Debugf("fluentd ids = %v", ids)
 
 	ws := 0
 	for groupKey, pidList := range ids {
@@ -153,7 +156,6 @@ func (e *Exporter) resolveFluentdIds() (map[string][]int, error) {
 		}
 
 		groupsKey := configFileNameRegex.FindStringSubmatch(cl)
-		log.Debugf("groupsKey = %v", groupsKey)
 
 		key := "default"
 		if len(groupsKey) > 0 {
@@ -168,7 +170,7 @@ func (e *Exporter) resolveFluentdIds() (map[string][]int, error) {
 func (e *Exporter) filterProc(proc procfs.Proc) string {
 	cla, err := proc.CmdLine()
 	if err != nil {
-		log.Info(err)
+		e.logger.Error(err.Error())
 		return ""
 	}
 	cl := strings.Join(cla, " ")
@@ -178,28 +180,28 @@ func (e *Exporter) filterProc(proc procfs.Proc) string {
 
 	st, err := proc.NewStat()
 	if err != nil {
-		log.Info(err)
+		e.logger.Error(err.Error())
 		return ""
 	}
 
 	// PPID=1 is a supervisor.
 	if st.PPID == 1 {
-		log.Debugf("PPID %d = %s", st.PPID, cl)
+		e.logger.Debug("PPID %d = %s", st.PPID, cl)
 		return ""
 	}
 	return cl
 }
 
 func (e *Exporter) procStat(groupKey string, pid int) (procfs.ProcStat, error) {
-	p, err := e.fs.NewProc(pid)
+	p, err := e.fs.Proc(pid)
 	if err != nil {
-		log.Error(err)
+		e.logger.Error(err.Error())
 		return procfs.ProcStat{}, err
 	}
 
-	ps, err := p.NewStat()
+	ps, err := p.Stat()
 	if err != nil {
-		log.Error(err)
+		e.logger.Error(err.Error())
 		return procfs.ProcStat{}, err
 	}
 	return ps, nil
@@ -219,16 +221,19 @@ func main() {
 		os.Exit(0)
 	}
 
-	e, err := NewExporter()
+	logger := promslog.New(&promslog.Config{})
+	e, err := NewExporter(logger)
 	if err != nil {
-		log.Fatal(err)
+		logger.Error(err.Error())
 	}
 
 	prometheus.MustRegister(e)
-	prometheus.MustRegister(version.NewCollector(Name))
+	prometheus.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 
-	log.Infoln("Starting ", Name, version.Info())
-	log.Infoln("Build context", version.BuildContext())
+	logger.Info("Starting ", Name, version.Info())
+	logger.Info("Build context", version.BuildContext())
 
 	http.Handle(*metricsPath, promhttp.Handler())
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,5 @@
 GO      ?= go
-PROMU   ?= $(GOPATH)/bin/promu
-DEP     ?= $(GOPATH)/bin/dep
+PROMU   ?= $(shell $(GO) env GOBIN)/promu
 
 PREFIX                  ?= $(shell pwd)
 BIN_DIR                 ?= $(shell pwd)
@@ -9,9 +8,9 @@ DOCKER_IMAGE_TAG        ?= $(subst /,-,$(shell git rev-parse --abbrev-ref HEAD))
 
 all: build
 
-build: promu dep
+build: promu
 	@echo ">> building binaries"
-	$(DEP) ensure
+	@$(GO) mod vendor
 	@$(PROMU) build --prefix $(PREFIX)
 
 docker:
@@ -24,11 +23,6 @@ clean:
 promu:
 	@GOOS=$(shell uname -s | tr A-Z a-z) \
 	GOARCH=$(subst x86_64,amd64,$(patsubst i%86,386,$(shell uname -m))) \
-	$(GO) get -u github.com/prometheus/promu
+	$(GO) install github.com/prometheus/promu@latest
 
-dep:
-	@GOOS=$(shell uname -s | tr A-Z a-z) \
-	GOARCH=$(subst x86_64,amd64,$(patsubst i%86,386,$(shell uname -m))) \
-	$(GO) get -u github.com/golang/dep/cmd/dep
-
-.PHONY: all build tarball docker promu dep
+.PHONY: all build tarball docker promu
